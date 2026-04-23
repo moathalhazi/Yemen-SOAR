@@ -1,0 +1,9 @@
+{
+    "name": "SOAR Pro",
+    "short_name": "SOAR",
+    "description": "Security Orchestration, Automation and Response",
+    "start_url": "/login",
+    "display": "standalone",
+    "background_color": "#0a0a0a",
+    "theme_color": "#3b82f6"
+}

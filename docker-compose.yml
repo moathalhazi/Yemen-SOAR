@@ -1,0 +1,285 @@
+version: '3.8'
+
+services:
+  # ========================================
+  # Data Layer
+  # ========================================
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: soar_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-soar_db}
+      POSTGRES_USER: ${POSTGRES_USER:-soar_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeMe123!}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schemas:/docker-entrypoint-initdb.d
+    networks:
+      - soar_network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-soar_user} -d ${POSTGRES_DB:-soar_db}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    env_file:
+      - .env
+
+  redis:
+    image: redis:7-alpine
+    container_name: soar_redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-ChangeMe123!}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - soar_network
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    env_file:
+      - .env
+
+
+
+  # ========================================
+  # Core Services (Modular Monolith)
+  # ========================================
+
+  forensic-service:
+    build:
+      context: ./services/forensic-service
+      dockerfile: Dockerfile
+    container_name: soar_forensic_service
+    ports:
+      - "8005:8005"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB:-soar_db}
+      - POSTGRES_USER=${POSTGRES_USER:-soar_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ChangeMe123!}
+      - EVIDENCE_DIR=/app/evidence
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - soar_network
+    volumes:
+      - ./services/forensic-service:/app
+      - forensic_evidence:/app/evidence
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8005/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    env_file:
+      - .env
+
+  api-core:
+    build:
+      context: ./services/api-core
+      dockerfile: Dockerfile
+    container_name: soar_api_core
+    ports:
+      - "8080:8080"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB:-soar_db}
+      - POSTGRES_USER=${POSTGRES_USER:-soar_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ChangeMe123!}
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-ChangeMe123!}
+      - AI_SERVICE_URL=http://ai-ml:8003
+      - FORENSIC_SERVICE_URL=http://forensic-service:8005
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - soar_network
+    volumes:
+      - ./services/api-core:/app
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    env_file:
+      - .env
+
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: soar_api_gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB:-soar_db}
+      - POSTGRES_USER=${POSTGRES_USER:-soar_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ChangeMe123!}
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-ChangeMe123!}
+      # Internal service URLs — routed to modular monolith
+      - API_CORE_URL=http://api-core:8080
+      - AI_ML_URL=http://ai-ml:8003
+      - INTEGRATION_MANAGER_URL=http://integration-manager:8013
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - soar_network
+    volumes:
+      - ./services/api-gateway:/app
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    env_file:
+      - .env
+
+  ai-ml:
+    build:
+      context: ./services/ai-ml
+      dockerfile: Dockerfile
+    container_name: soar_ai_ml
+    ports:
+      - "8003:8003"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB:-soar_db}
+      - POSTGRES_USER=${POSTGRES_USER:-soar_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ChangeMe123!}
+      - MODEL_PATH=/app/models/DeepSeek-R1-Distill-Llama-8B-Q4_0.gguf
+      - MODEL_N_CTX=4096
+      - MODEL_N_THREADS=4
+      - MODEL_N_GPU_LAYERS=0
+      - FORENSIC_SERVICE_URL=http://forensic-service:8005
+      - API_CORE_URL=http://api-core:8080
+      - REPORTS_DIR=/app/reports
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - soar_network
+    volumes:
+      - ./services/ai-ml:/app
+      - ai_reports:/app/reports
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8003/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    env_file:
+      - .env
+
+  integration-manager:
+    build:
+      context: ./services/integration-manager
+      dockerfile: Dockerfile
+    container_name: soar_integration_manager
+    ports:
+      - "8013:8013"
+      - "1514:1514/udp"
+      - "1514:1514/tcp"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB:-soar_db}
+      - POSTGRES_USER=${POSTGRES_USER:-soar_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ChangeMe123!}
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-ChangeMe123!}
+      - API_CORE_URL=http://api-core:8080
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - SYSLOG_PORT=1514
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - soar_network
+    volumes:
+      - ./services/integration-manager:/app
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8013/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    env_file:
+      - .env
+
+  # ========================================
+  # Frontend
+  # ========================================
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: soar_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8080/ws
+      - INTERNAL_API_URL=http://api-gateway:8000
+      - NODE_ENV=development
+      - WATCHPACK_POLLING=true
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+    depends_on:
+      - api-gateway
+    networks:
+      - soar_network
+    restart: unless-stopped
+    env_file:
+      - .env
+
+networks:
+  soar_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+
+volumes:
+  postgres_data:
+  redis_data:
+  ai_reports:
+  forensic_evidence:
+
+
