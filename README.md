@@ -523,7 +523,7 @@ Special thanks to the open-source security community.
 
 <div align="center" dir="rtl">
 
-**نظام SOAR Pro - تحويل الأمن السيبراني إلى عمليات استباقية مؤتمتة**
+**نظام Yemen SOAR- تحويل الأمن السيبراني إلى عمليات استباقية مؤتمتة**
 
 Made with ❤️ for the security community
 
